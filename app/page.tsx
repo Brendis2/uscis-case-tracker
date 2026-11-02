@@ -9,6 +9,31 @@ type EventRow = { id: string; status: string; status_description: string | null;
 type ShareRow = { id: string; case_id: string; recipient_email: string };
 const db = supabase();
 
+function StatusDescription({ text }: { text: string }) {
+  const linkPattern = /<a\s+href=["'](https:\/\/[^"']+)["'][^>]*>(.*?)<\/a>/gi;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = linkPattern.exec(text)) !== null) {
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    try {
+      const url = new URL(match[1]);
+      if (url.protocol === 'https:' && (url.hostname === 'uscis.gov' || url.hostname.endsWith('.uscis.gov'))) {
+        parts.push(<a key={`${match.index}-link`} href={url.toString()} target="_blank" rel="noreferrer">{match[2]}</a>);
+      } else {
+        parts.push(match[0]);
+      }
+    } catch {
+      parts.push(match[0]);
+    }
+    cursor = linkPattern.lastIndex;
+  }
+
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts.map((part, index) => typeof part === 'string' ? <span key={index}>{part}</span> : part)}</>;
+}
+
 export default function Home() {
   const [session, setSession] = useState<any>(null);
   const [email, setEmail] = useState('');
@@ -116,7 +141,7 @@ export default function Home() {
       <div className="footnote">Built for clarity. Designed around your privacy.</div></section> : <section className="dashboard"><div className="dash-head"><div><div className="eyebrow"><span className="live-dot"/> YOUR PRIVATE DASHBOARD</div><h1>Good to see you<span className="period">.</span></h1><p>Keep your cases close. We’ll keep the details clear.</p></div><div className="case-count"><strong>{String(cases.length).padStart(2, '0')}</strong><span>saved cases</span></div></div>
       <form className="lookup" onSubmit={lookup}><div className="lookup-label"><span className="add-icon">+</span><div><b>Track a case</b><small>Add your 13-character receipt number</small></div></div><input value={receipt} onChange={e => setReceipt(e.target.value.toUpperCase())} maxLength={13} placeholder="IOE0123456789" aria-label="Receipt number"/><button className="primary" disabled={busy}>{busy ? 'Checking…' : 'Look up case'} <span>→</span></button></form>
       {message && <p className="notice">{message}</p>}<div className="section-title"><div><h2>Your cases</h2><p>We check for new information when you ask.</p></div><span className="secure-tag">🔒 &nbsp;Private to you</span></div>
-      {cases.length === 0 ? <div className="empty"><div className="empty-mark">✳</div><h3>Your case list starts here.</h3><p>Enter a receipt number above to see your latest case status and start a timeline.</p></div> : <div className="case-list">{cases.map(row => { const isOwner = row.owner_id === session.user.id; return <article className="case-card" key={row.id}><div className="case-top"><div><span className="case-type">{row.form_type || 'USCIS CASE'}{!isOwner && ' · SHARED WITH YOU'}</span><h3>{row.receipt_number}</h3></div><span className="status-pill"><i/> {row.status}</span></div>{row.status_description && <p className="description">{row.status_description}</p>}<div className="case-bottom"><span>Last checked {new Date(row.checked_at).toLocaleString()}</span><div><button className="text-button" onClick={() => showHistory(row)}>View timeline</button>{isOwner && <><button className="text-button" onClick={() => refreshCase(row)} disabled={busy}>↻ Refresh</button><button className="text-button remove" onClick={() => removeCase(row)}>Remove</button><button className="text-button" onClick={() => loadShares(row)}>Manage access</button></>}</div></div>{isOwner && <label className="insight-consent"><input type="checkbox" checked={!!row.insights_opt_in} onChange={e => void setInsightsConsent(row, e.target.checked)}/><span><b>Opt in to future anonymous insights</b><small>Off by default. Aggregate analytics are not active yet; you can change this preference anytime.</small></span></label>}{history[row.id] && <div className="timeline">{history[row.id].map(event => <div className="event" key={event.id}><span className="event-dot"/><div><b>{event.status}</b><small>{new Date(event.recorded_at).toLocaleString()}</small>{event.status_description && <p>{event.status_description}</p>}</div></div>)}</div>}{isOwner && shares[row.id] && <div className="share-panel"><b>Read-only access</b><p>Share with someone who already has a Caseway account. You can revoke access at any time.</p><form onSubmit={e => { e.preventDefault(); void shareCase(row); }}><input type="email" required placeholder="attorney@example.com" value={shareEmails[row.id] ?? ''} onChange={e => setShareEmails(current => ({ ...current, [row.id]: e.target.value }))}/><button className="secondary" type="submit">Share case</button></form>{shares[row.id].map(grant => <div className="grant" key={grant.id}><span>{grant.recipient_email}</span><button className="text-button remove" onClick={() => revokeShare(grant.id, row)}>Revoke</button></div>)}</div>}</article>; })}</div>}
+      {cases.length === 0 ? <div className="empty"><div className="empty-mark">✳</div><h3>Your case list starts here.</h3><p>Enter a receipt number above to see your latest case status and start a timeline.</p></div> : <div className="case-list">{cases.map(row => { const isOwner = row.owner_id === session.user.id; return <article className="case-card" key={row.id}><div className="case-top"><div><span className="case-type">{row.form_type || 'USCIS CASE'}{!isOwner && ' · SHARED WITH YOU'}</span><h3>{row.receipt_number}</h3></div><span className="status-pill"><i/> {row.status}</span></div>{row.status_description && <p className="description"><StatusDescription text={row.status_description}/></p>}<div className="case-bottom"><span>Last checked {new Date(row.checked_at).toLocaleString()}</span><div><button className="text-button" onClick={() => showHistory(row)}>View timeline</button>{isOwner && <><button className="text-button" onClick={() => refreshCase(row)} disabled={busy}>↻ Refresh</button><button className="text-button remove" onClick={() => removeCase(row)}>Remove</button><button className="text-button" onClick={() => loadShares(row)}>Manage access</button></>}</div></div>{isOwner && <label className="insight-consent"><input type="checkbox" checked={!!row.insights_opt_in} onChange={e => void setInsightsConsent(row, e.target.checked)}/><span><b>Opt in to future anonymous insights</b><small>Off by default. Aggregate analytics are not active yet; you can change this preference anytime.</small></span></label>}{history[row.id] && <div className="timeline">{history[row.id].map(event => <div className="event" key={event.id}><span className="event-dot"/><div><b>{event.status}</b><small>{new Date(event.recorded_at).toLocaleString()}</small>{event.status_description && <p><StatusDescription text={event.status_description}/></p>}</div></div>)}</div>}{isOwner && shares[row.id] && <div className="share-panel"><b>Read-only access</b><p>Share with someone who already has a Caseway account. You can revoke access at any time.</p><form onSubmit={e => { e.preventDefault(); void shareCase(row); }}><input type="email" required placeholder="attorney@example.com" value={shareEmails[row.id] ?? ''} onChange={e => setShareEmails(current => ({ ...current, [row.id]: e.target.value }))}/><button className="secondary" type="submit">Share case</button></form>{shares[row.id].map(grant => <div className="grant" key={grant.id}><span>{grant.recipient_email}</span><button className="text-button remove" onClick={() => revokeShare(grant.id, row)}>Revoke</button></div>)}</div>}</article>; })}</div>}
       <p className="data-note">Your case data is private and never shared for research or insights without your explicit opt-in.</p></section>}
   </main>;
 }
