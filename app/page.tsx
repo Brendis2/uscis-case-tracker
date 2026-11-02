@@ -1,13 +1,13 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '../lib/supabase';
+import { normalizeReceiptNumber, parseCaseStatus } from '../lib/case-utils';
 
 type CaseRow = { id: string; owner_id: string; receipt_number: string; form_type: string | null; status: string; status_description: string | null; checked_at: string; insights_opt_in: boolean; };
 type EventRow = { id: string; status: string; status_description: string | null; recorded_at: string; };
 type ShareRow = { id: string; case_id: string; recipient_email: string };
 const db = supabase();
-const receiptPattern = /^[A-Z]{3}\d{10}$/;
 
 export default function Home() {
   const [session, setSession] = useState<any>(null);
@@ -47,8 +47,8 @@ export default function Home() {
   async function lookup(event: FormEvent) { event.preventDefault(); await performLookup(receipt); }
 
   async function performLookup(input: string) {
-    const normalized = input.trim().toUpperCase();
-    if (!receiptPattern.test(normalized)) { setMessage('Use three letters followed by ten digits (for example, IOE0123456789).'); return; }
+    const normalized = normalizeReceiptNumber(input);
+    if (!normalized) { setMessage('Use three letters followed by ten digits (for example, IOE0123456789).'); return; }
     setBusy(true); setMessage('');
     try {
       const { data: { session: current } } = await db.auth.getSession();
@@ -56,19 +56,18 @@ export default function Home() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? 'Lookup failed.');
       if (!current) throw new Error('Sign in again to continue.');
-      const caseStatus = payload.case_status ?? payload;
-      const nextStatus = caseStatus.current_case_status_text_en ?? caseStatus.current_case_status ?? caseStatus.status ?? 'Status unavailable';
-      const nextDescription = caseStatus.current_case_status_desc_en ?? caseStatus.current_case_status_desc ?? caseStatus.status_description ?? null;
-      const { data: previous } = await db.from('cases').select('id,status').eq('owner_id', current.user.id).eq('receipt_number', normalized).maybeSingle();
-      const baseFormType = caseStatus.formType ?? caseStatus.form_type ?? null;
-      const savedFormType = payload.demo ? `Demo · ${baseFormType ?? 'USCIS case'}` : baseFormType;
-      const { data, error } = await db.from('cases').upsert({ receipt_number: normalized, form_type: savedFormType, status: nextStatus, status_description: nextDescription, checked_at: new Date().toISOString(), owner_id: current.user.id }, { onConflict: 'owner_id,receipt_number' }).select().single();
+      const caseStatus = parseCaseStatus(payload);
+      const nextStatus = caseStatus.status;
+      const nextDescription = caseStatus.description;
+      const savedFormType = caseStatus.isDemo ? `Demo · ${caseStatus.formType ?? 'USCIS case'}` : caseStatus.formType;
+      const { error } = await db.rpc('record_case_status', {
+        p_receipt_number: normalized,
+        p_form_type: savedFormType,
+        p_status: nextStatus,
+        p_status_description: nextDescription
+      });
       if (error) throw error;
-      if (!previous || previous.status !== data.status) {
-        const { error: historyError } = await db.from('status_events').insert({ case_id: data.id, owner_id: current.user.id, status: data.status, status_description: data.status_description, recorded_at: data.checked_at });
-        if (historyError) throw historyError;
-      }
-      setReceipt(''); await loadCases(); setMessage(payload.demo ? 'Demo sample saved. This is not a live USCIS result.' : 'Case saved and status refreshed.');
+      setReceipt(''); await loadCases(); setMessage(caseStatus.isDemo ? 'Demo sample saved. This is not a live USCIS result.' : 'Case saved and status refreshed.');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Something went wrong.'); }
     finally { setBusy(false); }
   }
@@ -112,7 +111,7 @@ export default function Home() {
 
   return <main className="shell">
     <nav className="nav"><a className="brand" href="#"><span className="brand-mark">c</span>caseway</a><span className="nav-note">Your case, made clearer.</span>{session && <button className="text-button" onClick={() => db.auth.signOut()}>Sign out</button>}</nav>
-    {!session ? <section className="welcome"><div className="welcome-copy"><div className="eyebrow"><span className="live-dot"/> USCIS CASE TRACKER</div><h1>Know where you stand.<br/><em>Feel less in the dark.</em></h1><p className="intro">A calm, private place to follow your immigration case. Sign in to save your case and keep its story in one place.</p><div className="promise"><span>01</span><p><b>Your details stay yours</b><br/>Your cases are private to your account.</p></div><div className="promise"><span>02</span><p><b>Every update has a timeline</b><br/>See when your case status changes.</p></div><div className="promise"><span>03</span><p><b>No confusing jargon</b><br/>A clearer view of what's happening.</p></div></div>
+    {!session ? <section className="welcome"><div className="welcome-copy"><div className="eyebrow"><span className="live-dot"/> USCIS CASE TRACKER</div><h1>Know where you stand.<br/><em>Feel less in the dark.</em></h1><p className="intro">A calm, private place to follow your immigration case. Sign in to save your case and keep its story in one place.</p><div className="promise"><span>01</span><p><b>Your details stay yours</b><br/>Your cases are private to your account.</p></div><div className="promise"><span>02</span><p><b>Every update has a timeline</b><br/>See when your case status changes.</p></div><div className="promise"><span>03</span><p><b>No confusing jargon</b><br/>A clearer view of what&apos;s happening.</p></div></div>
       <div className="auth-card"><span className="eyebrow">WELCOME TO CASEWAY</span><h2>Your next step starts here.</h2><p>Make an account or pick up where you left off.</p><label>Email address<input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email"/></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 8 characters" autoComplete="current-password"/></label><button className="primary full" disabled={busy || !email || !password} onClick={() => auth('signIn')}>{busy ? 'One moment…' : 'Sign in'} <span>→</span></button><button className="secondary full" disabled={busy || !email || !password} onClick={() => auth('signUp')}>Create an account</button><p className="privacy">🔒 &nbsp;Your cases are only visible to you.</p>{message && <p className="notice">{message}</p>}</div>
       <div className="footnote">Built for clarity. Designed around your privacy.</div></section> : <section className="dashboard"><div className="dash-head"><div><div className="eyebrow"><span className="live-dot"/> YOUR PRIVATE DASHBOARD</div><h1>Good to see you<span className="period">.</span></h1><p>Keep your cases close. We’ll keep the details clear.</p></div><div className="case-count"><strong>{String(cases.length).padStart(2, '0')}</strong><span>saved cases</span></div></div>
       <form className="lookup" onSubmit={lookup}><div className="lookup-label"><span className="add-icon">+</span><div><b>Track a case</b><small>Add your 13-character receipt number</small></div></div><input value={receipt} onChange={e => setReceipt(e.target.value.toUpperCase())} maxLength={13} placeholder="IOE0123456789" aria-label="Receipt number"/><button className="primary" disabled={busy}>{busy ? 'Checking…' : 'Look up case'} <span>→</span></button></form>

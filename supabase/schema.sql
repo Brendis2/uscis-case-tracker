@@ -38,16 +38,36 @@ create table if not exists public.case_shares (
 
 create index if not exists cases_owner_updated_idx on public.cases(owner_id, updated_at desc);
 create index if not exists status_events_case_time_idx on public.status_events(case_id, recorded_at desc);
+create index if not exists case_shares_recipient_idx on public.case_shares(recipient_id, case_id);
+create or replace function public.touch_case_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end; $$;
+drop trigger if exists cases_touch_updated_at on public.cases;
+create trigger cases_touch_updated_at before update on public.cases
+for each row execute function public.touch_case_updated_at();
 alter table public.cases enable row level security;
 alter table public.status_events enable row level security;
 alter table public.case_shares enable row level security;
 drop policy if exists "Owners manage their cases" on public.cases;
 create policy "Owners manage their cases" on public.cases for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 drop policy if exists "Owners manage their status events" on public.status_events;
-create policy "Owners manage their status events" on public.status_events for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
+create policy "Owners manage their status events" on public.status_events for all
+using (
+  auth.uid() = owner_id and exists (
+    select 1 from public.cases c where c.id = status_events.case_id and c.owner_id = auth.uid()
+  )
+)
+with check (
+  auth.uid() = owner_id and exists (
+    select 1 from public.cases c where c.id = status_events.case_id and c.owner_id = auth.uid()
+  )
+);
 drop policy if exists "Shared users can read cases" on public.cases;
 create policy "Shared users can read cases" on public.cases for select using (
-  exists (select 1 from public.case_shares s where s.case_id = id and s.recipient_id = auth.uid())
+  exists (select 1 from public.case_shares s where s.case_id = cases.id and s.recipient_id = auth.uid())
 );
 drop policy if exists "Shared users can read status events" on public.status_events;
 create policy "Shared users can read status events" on public.status_events for select using (
@@ -77,6 +97,48 @@ begin
 end; $$;
 revoke all on function public.share_case_with_email(uuid, text) from public;
 grant execute on function public.share_case_with_email(uuid, text) to authenticated;
+
+-- Store the current snapshot and append a timeline event atomically. A per-user
+-- advisory lock prevents simultaneous refreshes from creating duplicate events.
+create or replace function public.record_case_status(
+  p_receipt_number text,
+  p_form_type text,
+  p_status text,
+  p_status_description text
+)
+returns uuid language plpgsql set search_path = '' as $$
+declare
+  user_id uuid := auth.uid();
+  prior_status text;
+  saved_case_id uuid;
+begin
+  if user_id is null then raise exception 'Sign in required'; end if;
+  if p_receipt_number !~ '^[A-Z]{3}[0-9]{10}$' then raise exception 'Invalid receipt number'; end if;
+  if p_status is null or length(trim(p_status)) = 0 then raise exception 'Status is required'; end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(user_id::text || ':' || p_receipt_number, 0)
+  );
+  select c.status into prior_status from public.cases c
+    where c.owner_id = user_id and c.receipt_number = p_receipt_number for update;
+
+  insert into public.cases(owner_id, receipt_number, form_type, status, status_description, checked_at)
+    values(user_id, p_receipt_number, p_form_type, p_status, p_status_description, now())
+    on conflict (owner_id, receipt_number) do update set
+      form_type = excluded.form_type,
+      status = excluded.status,
+      status_description = excluded.status_description,
+      checked_at = now()
+    returning id into saved_case_id;
+
+  if prior_status is null or prior_status is distinct from p_status then
+    insert into public.status_events(case_id, owner_id, status, status_description, recorded_at)
+      values(saved_case_id, user_id, p_status, p_status_description, now());
+  end if;
+  return saved_case_id;
+end; $$;
+revoke all on function public.record_case_status(text, text, text, text) from public;
+grant execute on function public.record_case_status(text, text, text, text) to authenticated;
 
 -- Future insights should consume aggregates grouped by form and time interval,
 -- only for rows where insights_opt_in is true. Never expose receipt numbers,

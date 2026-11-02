@@ -2,7 +2,26 @@
   "name": "uscis-case-tracker",
   "version": "0.1.0",
   "private": true,
-  "scripts": { "dev": "next dev", "build": "next build", "start": "next start", "lint": "next lint" },
-  "dependencies": { "@supabase/ssr": "^0.6.1", "@supabase/supabase-js": "^2.49.1", "next": "^14.2.24", "react": "^18.3.1", "react-dom": "^18.3.1" },
-  "devDependencies": { "@types/node": "^22.13.4", "@types/react": "^18.3.18", "eslint": "^8.57.1", "eslint-config-next": "^14.2.24", "typescript": "^5.7.3" }
+  "scripts": {
+    "dev": "next dev",
+    "build": "npm run lint && npm run typecheck && next build",
+    "start": "next start",
+    "lint": "eslint --ext .ts,.tsx,.js,.cjs app lib tests",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc lib/case-utils.ts --outDir .test-build --module commonjs --target ES2020 --skipLibCheck && node --test tests/case-utils.test.cjs"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.6.1",
+    "@supabase/supabase-js": "^2.49.1",
+    "next": "^14.2.24",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/react": "18.3.31",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.24",
+    "typescript": "5.9.3"
+  }
 }
